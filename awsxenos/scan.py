@@ -6,7 +6,8 @@ from typing import Any, Optional, Dict, List, DefaultDict, Set
 import json
 import sys
 
-import boto3  # type: ignore
+import boto3
+import botocore  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 from policyuniverse.arn import ARN  # type: ignore
 from policyuniverse.policy import Policy  # type: ignore
@@ -19,13 +20,14 @@ from awsxenos import package_path
 class Scan:
     def __init__(self, exclude_service: Optional[bool] = True, exclude_aws: Optional[bool] = True) -> None:
         self.known_accounts_data = defaultdict(dict)  # type: DefaultDict[str, Dict[Any, Any]]
-        self.findings = defaultdict(Finding) # type: DefaultDict[str, Finding]
+        self.findings = defaultdict(Finding)  # type: DefaultDict[str, Finding]
         self._buckets = self.list_account_buckets()
         self.roles = self.get_roles(exclude_service, exclude_aws)
         self.accounts = self.get_all_accounts()
         self.bucket_policies = self.get_bucket_policies()
         self.bucket_acls = self.get_bucket_acls()
-        for resource in ["roles", "bucket_policies", "bucket_acls"]:
+        self.kms_keys = self.get_kms_keys()
+        for resource in ["roles", "bucket_policies", "bucket_acls", "kms_keys"]:
             if resource != "bucket_acls":
                 self.findings.update(self.collate_findings(self.accounts, getattr(self, resource)))
             else:
@@ -106,6 +108,26 @@ class Scan:
                     print(e)
                     continue
         return bucket_policies
+    
+    def get_kms_keys(self) -> DefaultDict[str, Dict[Any, Any]]:
+        """
+
+        Returns:
+            DefaultDict[str, Dict[Any, Any]]: [description]
+        """
+        keys = defaultdict(str)
+        kms_regions = boto3.Session().get_available_regions("kms") 
+        for region in kms_regions:
+            kms = boto3.client("kms", region_name=region)
+            try:
+                region_keys = kms.list_keys()['Keys']
+            except ClientError as e:
+                print(f"[!] - Failed while trying to create client for {region}")
+                print(e)
+                continue
+            for key in region_keys:
+                keys[key['KeyArn']] = json.loads(kms.get_key_policy(KeyId=key['KeyId'], PolicyName='default')['Policy'])
+        return keys
 
     def get_roles(
         self, exclude_service: Optional[bool] = True, exclude_aws: Optional[bool] = True
